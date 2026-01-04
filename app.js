@@ -1,7 +1,6 @@
 const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
-const fs = require("fs");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const app = express();
@@ -9,11 +8,9 @@ app.use(cors());
 app.use(express.json());
 
 const upload = multer({ dest: "uploads/" });
-
-// Gemini API key Render ke Environment Variable se aayegi
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Simple in-memory free usage counter (3 free resumes)
+// 3 free resumes per IP
 let usageCount = {};
 
 app.get("/", (req, res) => {
@@ -34,27 +31,25 @@ app.post("/optimize", upload.single("resume"), async (req, res) => {
       });
     }
 
-    const resumeText = fs.readFileSync(req.file.path, "utf8");
     const jobDescription = req.body.jd;
 
     const prompt = `
 You are an ATS resume optimization expert.
 
-RULES:
-- Make resume ATS friendly
-- Do NOT add fake experience
+The user has uploaded a resume file (PDF/DOCX).
+
+TASK:
+- Rewrite the resume according to the job description
+- Make it ATS-friendly
 - Improve wording, skills, and courses
-- Match job description keywords
+- Do NOT add fake experience
 - Target ATS score above 85%
 
 JOB DESCRIPTION:
 ${jobDescription}
 
-RESUME:
-${resumeText}
-
 OUTPUT FORMAT:
-1. Optimized Resume
+1. Optimized Resume (full content)
 2. ATS Score (percentage)
 3. Missing Keywords
 `;
@@ -71,8 +66,8 @@ OUTPUT FORMAT:
       remainingFree: 3 - usageCount[userIP],
       data: output
     });
-  } catch (error) {
-    console.error(error);
+  } catch (err) {
+    console.error(err);
     res.status(500).json({
       success: false,
       message: "Server error"
