@@ -5,9 +5,9 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
 
 const upload = multer({ dest: "uploads/" });
+
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // 3 free resumes per IP
@@ -18,40 +18,52 @@ app.get("/", (req, res) => {
 });
 
 app.post("/optimize", upload.single("resume"), async (req, res) => {
+  const userIP =
+    req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+
+  usageCount[userIP] = (usageCount[userIP] || 0) + 1;
+
+  if (usageCount[userIP] > 3) {
+    return res.json({
+      paywall: true
+    });
+  }
+
   try {
-    const userIP =
-      req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+    const jd = req.body.jd;
 
-    usageCount[userIP] = (usageCount[userIP] || 0) + 1;
-
-    if (usageCount[userIP] > 3) {
+    if (!jd || jd.length < 20) {
       return res.json({
-        paywall: true,
-        message: "3 free resumes used. Please pay to continue."
+        success: true,
+        remainingFree: 3 - usageCount[userIP],
+        data: "❌ Please paste a proper job description (minimum 2–3 lines)."
       });
     }
 
-    const jobDescription = req.body.jd;
-
     const prompt = `
-You are an ATS resume optimization expert.
+You are a professional ATS resume optimization expert.
 
 The user has uploaded a resume file (PDF/DOCX).
 
 TASK:
 - Rewrite the resume according to the job description
 - Make it ATS-friendly
-- Improve wording, skills, and courses
+- Improve skills, wording, and courses
 - Do NOT add fake experience
 - Target ATS score above 85%
 
 JOB DESCRIPTION:
-${jobDescription}
+${jd}
 
 OUTPUT FORMAT:
-1. Optimized Resume (full content)
-2. ATS Score (percentage)
-3. Missing Keywords
+Optimized Resume:
+[full resume content]
+
+ATS Score:
+[number]%
+
+Missing Keywords:
+[list]
 `;
 
     const model = genAI.getGenerativeModel({
@@ -59,18 +71,28 @@ OUTPUT FORMAT:
     });
 
     const result = await model.generateContent(prompt);
-    const output = result.response.text();
+    const text = result.response.text();
+
+    // HARD SAFETY
+    const finalText =
+      text && text.trim().length > 10
+        ? text
+        : "⚠️ AI could not generate a strong result. Please try a different job description.";
 
     res.json({
       success: true,
       remainingFree: 3 - usageCount[userIP],
-      data: output
+      data: finalText
     });
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      success: false,
-      message: "Server error"
+    console.error("GEMINI ERROR:", err);
+
+    res.json({
+      success: true,
+      remainingFree: 3 - usageCount[userIP],
+      data:
+        "⚠️ Temporary AI issue. Please wait 10 seconds and try again."
     });
   }
 });
