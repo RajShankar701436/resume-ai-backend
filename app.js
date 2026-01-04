@@ -1,22 +1,3 @@
-const express = require("express");
-const multer = require("multer");
-const cors = require("cors");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-
-const app = express();
-app.use(cors());
-
-const upload = multer({ dest: "uploads/" });
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-// 3 free resumes per IP
-let usageCount = {};
-
-app.get("/", (req, res) => {
-  res.send("AI Resume Backend Running");
-});
-
 app.post("/optimize", upload.single("resume"), async (req, res) => {
   const userIP =
     req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
@@ -24,80 +5,63 @@ app.post("/optimize", upload.single("resume"), async (req, res) => {
   usageCount[userIP] = (usageCount[userIP] || 0) + 1;
 
   if (usageCount[userIP] > 3) {
+    return res.json({ paywall: true });
+  }
+
+  const jd = req.body.jd;
+
+  if (!jd || jd.length < 30) {
     return res.json({
-      paywall: true
+      success: true,
+      remainingFree: 3 - usageCount[userIP],
+      data: "❌ Please paste a detailed job description."
     });
   }
 
-  try {
-    const jd = req.body.jd;
+  const prompt = `
+You are an ATS resume expert.
 
-    if (!jd || jd.length < 20) {
-      return res.json({
-        success: true,
-        remainingFree: 3 - usageCount[userIP],
-        data: "❌ Please paste a proper job description (minimum 2–3 lines)."
-      });
-    }
+Optimize the resume for the job description.
+Rules:
+- ATS friendly
+- No fake experience
+- Improve wording & skills
+- Professional tone
 
-    const prompt = `
-You are a professional ATS resume optimization expert.
-
-The user has uploaded a resume file (PDF/DOCX).
-
-TASK:
-- Rewrite the resume according to the job description
-- Make it ATS-friendly
-- Improve skills, wording, and courses
-- Do NOT add fake experience
-- Target ATS score above 85%
-
-JOB DESCRIPTION:
+Job Description:
 ${jd}
 
-OUTPUT FORMAT:
-Optimized Resume:
-[full resume content]
-
-ATS Score:
-[number]%
-
-Missing Keywords:
-[list]
+Return:
+Optimized Resume
+ATS Score %
+Missing Keywords
 `;
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash"
-    });
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
+  // 🔁 RETRY LOGIC
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
 
-    // HARD SAFETY
-    const finalText =
-      text && text.trim().length > 10
-        ? text
-        : "⚠️ AI could not generate a strong result. Please try a different job description.";
-
-    res.json({
-      success: true,
-      remainingFree: 3 - usageCount[userIP],
-      data: finalText
-    });
-
-  } catch (err) {
-    console.error("GEMINI ERROR:", err);
-
-    res.json({
-      success: true,
-      remainingFree: 3 - usageCount[userIP],
-      data:
-        "⚠️ Temporary AI issue. Please wait 10 seconds and try again."
-    });
+      if (text && text.length > 20) {
+        return res.json({
+          success: true,
+          remainingFree: 3 - usageCount[userIP],
+          data: text
+        });
+      }
+    } catch (err) {
+      console.error(`Gemini attempt ${attempt} failed`);
+      if (attempt === 2) {
+        return res.json({
+          success: true,
+          remainingFree: 3 - usageCount[userIP],
+          data:
+            "⚠️ AI is busy right now. Please wait 20–30 seconds and try again."
+        });
+      }
+    }
   }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
 });
